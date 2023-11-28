@@ -20,6 +20,7 @@
 #include <errno.h>
 #ifndef _MSC_VER
 #include <unistd.h>
+#include <poll.h>
 #endif
 #include <signal.h>
 #include <sys/types.h>
@@ -31,6 +32,7 @@
 # define SHUT_RDWR 2
 # define close closesocket
 # define strdup _strdup
+# define poll WSAPoll
 #else
 # include <sys/socket.h>
 # include <sys/ioctl.h>
@@ -284,15 +286,18 @@ static int _connect(int sockfd,
 #else
     if (rc == -1 && errno == EINPROGRESS) {
 #endif
-        fd_set wset;
         int optval;
         socklen_t optlen = sizeof(optval);
         struct timeval tv = *ro_tv;
 
         /* Wait to be available in writing */
-        FD_ZERO(&wset);
-        FD_SET(sockfd, &wset);
-        rc = select(sockfd + 1, NULL, &wset, NULL, &tv);
+        struct pollfd fds;
+        fds.fd = sockfd;
+        fds.events = POLLOUT;
+        fds.revents = 0;
+
+        int timeout_ms = ro_tv->tv_sec * 1000 + ro_tv->tv_usec / 1000;
+        rc = poll(&fds, 1, timeout_ms);
         if (rc <= 0) {
             /* Timeout or fail */
             return -1;
@@ -476,14 +481,11 @@ static int _modbus_tcp_flush(modbus_t *ctx)
         rc = recv(ctx->s, devnull, MODBUS_TCP_MAX_ADU_LENGTH, MSG_DONTWAIT);
 #else
         /* On Win32, it's a bit more complicated to not wait */
-        fd_set rset;
-        struct timeval tv;
-
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
-        FD_ZERO(&rset);
-        FD_SET(ctx->s, &rset);
-        rc = select(ctx->s + 1, &rset, NULL, NULL, &tv);
+        struct pollfd fds;
+        fds.fd = ctx->s;
+        fds.events = POLLIN;
+        fds.revents = 0;
+        rc = poll(&fds, 1, 0);
         if (rc == -1) {
             return -1;
         }
@@ -759,17 +761,21 @@ int modbus_tcp_pi_accept(modbus_t *ctx, int *s)
 }
 
 static int
-_modbus_tcp_select(modbus_t *ctx, fd_set *rset, struct timeval *tv, int length_to_read)
+_modbus_tcp_select(modbus_t *ctx, struct timeval *tv, int length_to_read)
 {
     int s_rc;
-    while ((s_rc = select(ctx->s + 1, rset, NULL, NULL, tv)) == -1) {
+    struct pollfd fds;
+    fds.fd = ctx->s;
+    fds.events = POLLIN;
+    fds.revents = 0;
+    int timeout_ms = tv->tv_sec * 1000 + tv->tv_usec / 1000;
+    while ((s_rc = poll(&fds, 1, timeout_ms)) == -1) {
         if (errno == EINTR) {
             if (ctx->debug) {
                 fprintf(stderr, "A non blocked signal was caught\n");
             }
             /* Necessary after an error */
-            FD_ZERO(rset);
-            FD_SET(ctx->s, rset);
+            fds.revents = 0;
         } else {
             return -1;
         }

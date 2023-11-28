@@ -11,6 +11,7 @@
 #include <string.h>
 #ifndef _MSC_VER
 #include <unistd.h>
+#include <poll.h>
 #endif
 #include "modbus-private.h"
 #include <assert.h>
@@ -1130,7 +1131,7 @@ static int _modbus_rtu_flush(modbus_t *ctx)
 }
 
 static int
-_modbus_rtu_select(modbus_t *ctx, fd_set *rset, struct timeval *tv, int length_to_read)
+_modbus_rtu_select(modbus_t *ctx, struct timeval *tv, int length_to_read)
 {
     int s_rc;
 #if defined(_WIN32)
@@ -1145,14 +1146,18 @@ _modbus_rtu_select(modbus_t *ctx, fd_set *rset, struct timeval *tv, int length_t
         return -1;
     }
 #else
-    while ((s_rc = select(ctx->s + 1, rset, NULL, NULL, tv)) == -1) {
+    struct pollfd fds;
+    fds.fd = ctx->s;
+    fds.events = POLLIN;
+    fds.revents = 0;
+    int timeout_ms = tv->tv_sec * 1000 + tv->tv_usec / 1000;
+    while ((s_rc = poll(&fds, 1, timeout_ms)) == -1) {
         if (errno == EINTR) {
             if (ctx->debug) {
                 fprintf(stderr, "A non blocked signal was caught\n");
             }
             /* Necessary after an error */
-            FD_ZERO(rset);
-            FD_SET(ctx->s, rset);
+            fds.revents = 0;
         } else {
             return -1;
         }
